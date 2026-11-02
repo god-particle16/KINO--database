@@ -15,9 +15,19 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     steps:
+      # main = code only
       - uses: actions/checkout@v4
+
+      # the `data` branch holds the database (reset to a single commit on every run,
+      # so the repo never grows). It does not exist on the very first run.
+      - name: Checkout previous data
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: data
+          path: data
 
       - uses: actions/setup-python@v5
         with:
@@ -25,17 +35,31 @@ jobs:
 
       - name: Fetch fresh data
         env:
-          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}   # optional; movies are skipped without it
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}   # optional; needed for movie posters/overviews
+          MIN_VOTES_MOVIES: ${{ vars.MIN_VOTES_MOVIES }}
+          MIN_VOTES_SERIES: ${{ vars.MIN_VOTES_SERIES }}
         run: python scripts/update_db.py
 
-      - name: Commit and push if changed
+      - name: Publish data branch (single commit)
         run: |
+          cd data
+          rm -rf .git
+          git init -q -b data
           git config user.name "kino-bot"
           git config user.email "kino-bot@users.noreply.github.com"
-          git add data/
-          if git diff --staged --quiet; then
-            echo "No changes"
-          else
-            git commit -m "data: daily update $(date -u +%F)"
-            git push
+          git add -A
+          git commit -q -m "data: update $(date -u +%F)"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q --force origin data
+
+      # GitHub pauses scheduled workflows after 60 days without repo activity,
+      # so leave a tiny commit on main once a month.
+      - name: Keep schedule alive
+        run: |
+          if [ "$(date -u +%d)" = "01" ]; then
+            date -u +%F > .keepalive
+            git config user.name "kino-bot"
+            git config user.email "kino-bot@users.noreply.github.com"
+            git add .keepalive
+            git diff --staged --quiet || (git commit -q -m "chore: keepalive" && git push -q origin HEAD:main)
           fi

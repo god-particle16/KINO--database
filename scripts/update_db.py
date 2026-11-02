@@ -429,22 +429,28 @@ def update_movies() -> int:
 # Index / meta
 # --------------------------------------------------------------------------- #
 def write_index(results: dict[str, int]) -> None:
-    files = sorted(str(p.relative_to(ROOT)) for p in ROOT.rglob("*.json") if p.name != "index.json")
+    files = sorted(str(p.relative_to(ROOT)) for p in ROOT.rglob("*.json")
+                   if p.name != "index.json" and p.relative_to(ROOT).parts[0] != "bulk")
     counts = {}
     for kind in ("anime", "series", "movies"):
         counts[kind] = len(read_json(ROOT / "catalog" / f"{kind}.json", {}))
     write_json(ROOT / "index.json", {
         "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "counts": counts,
+        "bulk": read_json(ROOT / "bulk" / "meta.json", None),
         "sources_ok": results,
         "files": files,
     })
 
 
 def main() -> int:
+    import bulk_imdb  # local module, shares the helpers above
+
     ROOT.mkdir(parents=True, exist_ok=True)
-    results = {"anime": 0, "series": 0, "movies": 0}
-    for name, fn in (("anime", update_anime), ("series", update_series), ("movies", update_movies)):
+    results = {"anime": 0, "series": 0, "movies": 0, "bulk": 0}
+    core = sys.modules[__name__]
+    for name, fn in (("anime", update_anime), ("series", update_series),
+                     ("movies", update_movies), ("bulk", lambda: bulk_imdb.update_bulk(core))):
         try:
             results[name] = fn()
         except Exception as e:  # one source must never break the others
@@ -453,6 +459,8 @@ def main() -> int:
     log(f"done: {results}")
     # Fail the workflow only if every source that was attempted produced nothing.
     attempted = [k for k in results if k != "movies" or os.environ.get("TMDB_API_KEY")]
+    if os.environ.get("SKIP_BULK") == "1":
+        attempted.remove("bulk")
     if all(results[k] == 0 for k in attempted):
         log("ERROR: no source produced data")
         return 1

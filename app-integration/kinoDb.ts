@@ -7,9 +7,10 @@
  */
 
 const REPO = 'god-particle16/KINO--database';
+// The database lives on the `data` branch (the `main` branch only holds code).
 const BASES = [
-  `https://raw.githubusercontent.com/${REPO}/main/data`,
-  `https://cdn.jsdelivr.net/gh/${REPO}@main/data`,
+  `https://raw.githubusercontent.com/${REPO}/data`,
+  `https://cdn.jsdelivr.net/gh/${REPO}@data`,
 ];
 
 export type MediaType = 'anime' | 'series' | 'movies';
@@ -106,3 +107,59 @@ export const getSchedule = () => getJson<ScheduleEntry[]>('series_schedule.json'
 /** When the database was last refreshed, plus item counts. */
 export const getMeta = () =>
   getJson<{ updated_at: string; counts: Record<MediaType, number> }>('index.json');
+
+// ---------------------------------------------------------------------------
+// GLOBAL catalog: every movie and series on IMDb (100k+ titles), via bulk/.
+// Items are sharded by IMDb number, search is sharded by first letter.
+// ---------------------------------------------------------------------------
+export type BulkType = 'movies' | 'series';
+const SHARDS = 64;
+const STOP = new Set(['the', 'a', 'an', 'of', 'and']);
+const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+const words = (s: string) => norm(s).match(/[\p{L}\p{N}]+/gu) ?? [];
+
+export interface BulkHit { id: string; imdbId: string; title: string; original?: string; year?: number | null; votes: number }
+
+/** Look up one title by IMDb id (tt0111161). Poster/overview are filled in over time and may be missing. */
+export async function getBulkItem(t: BulkType, imdbId: string): Promise<KinoItem | undefined> {
+  const n = parseInt(imdbId.replace(/\D/g, ''), 10) % SHARDS;
+  const shard = await getJson<Record<string, KinoItem>>(`bulk/${t}/s${String(n).padStart(2, '0')}.json`);
+  return shard[imdbId];
+}
+
+/** Search the whole global catalog. Results are sorted by popularity (vote count). */
+export async function searchBulk(t: BulkType, query: string, limit = 40): Promise<BulkHit[]> {
+  const qw = words(query);
+  if (!qw.length) return [];
+  const first = qw.find(w => !STOP.has(w)) ?? qw[0];
+  const c = first[0];
+  const key = /[a-z0-9]/.test(c) ? c : '_';
+  let rows: any[][];
+  try { rows = await getJson<any[][]>(`bulk/${t}/search/${key}.json`); } catch { return []; }
+  const out: BulkHit[] = [];
+  for (const r of rows) {
+    const hay = norm(`${r[1]} ${r[4] ?? ''}`);
+    if (qw.every(w => hay.includes(w))) {
+      out.push({ id: `imdb:${r[0]}`, imdbId: r[0], title: r[1], original: r[4], year: r[2], votes: r[3] });
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
+/** Curated global lists: 'top_rated' | 'most_voted' | 'recent' (500 titles each). */
+export async function getBulkList(t: BulkType, name: 'top_rated' | 'most_voted' | 'recent', limit = 50) {
+  const ids = (await getJson<string[]>(`bulk/${t}/${name}.json`)).slice(0, limit);
+  const items = await Promise.all(ids.map(id => getBulkItem(t, id)));
+  return items.filter(Boolean) as KinoItem[];
+}
+
+/** Search everything: live catalogs (anime/series/movies) + the global movie/series catalog. */
+export async function searchGlobal(query: string) {
+  const [live, movies, series] = await Promise.all([
+    searchAll(query).catch(() => [] as KinoItem[]),
+    searchBulk('movies', query, 20),
+    searchBulk('series', query, 20),
+  ]);
+  return { live, movies, series };
+}

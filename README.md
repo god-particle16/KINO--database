@@ -1,11 +1,14 @@
 # KINO database
 
 Auto-updating media database for the KINO app (anime, series, movies).
-A GitHub Action runs every day at 06:00 IST, fetches fresh data and commits it to `data/`.
+A GitHub Action runs every day at 06:00 IST, fetches fresh data and publishes it to the
+**`data` branch** (reset to one commit each run, so the repo never grows). `main` holds only the code.
 No server and no manual work. The app just reads the JSON files.
 
 | Type | Source | Key needed |
 |------|--------|-----------|
+| **All movies + series worldwide** (100k+ titles: title, year, genres, runtime, IMDb rating) | IMDb public datasets | no |
+| Posters + descriptions for those | TVMaze (series), TMDB (movies and fallback), a few thousand titles per day, most popular first | TMDB only |
 | Anime | AniList | no |
 | Series (+ 14-day episode schedule) | TVMaze | no |
 | Movies (incl. Tamil, Telugu, Hindi, Malayalam lists) | TMDB, fetched on GitHub's servers | yes, optional |
@@ -20,15 +23,31 @@ No server and no manual work. The app just reads the JSON files.
 4. **Actions** tab → *Update KINO database* → **Run workflow** to fill the data for the first time.
    After that it runs by itself every day.
 
-## Data layout
+## Data layout (on the `data` branch)
 
 ```
-data/index.json            last update time + counts
-data/catalog/{anime,series,movies}.json   every item ever seen, keyed by id (grows daily)
-data/lists/<type>_<name>.json             ordered id lists (trending, popular, airing ...)
-data/search/<type>.json                   compact search index
-data/series_schedule.json                 episodes airing in the next 14 days
+index.json                       last update time + counts
+catalog/{anime,series,movies}.json   live catalogs: trending/airing/new titles with posters (grows daily)
+lists/<type>_<name>.json         ordered id lists (trending, popular, airing ...)
+search/<type>.json               compact search index for the live catalogs
+series_schedule.json             episodes airing in the next 14 days
+bulk/{movies,series}/s00..s63.json   GLOBAL catalog, sharded by IMDb number
+bulk/{movies,series}/search/<letter>.json   global search index
+bulk/{movies,series}/{top_rated,most_voted,recent}.json   500-title lists
+bulk/meta.json                   counts and poster-fill progress
 ```
+
+### How many titles?
+By default titles with fewer than **1000 votes (movies)** / **300 votes (series)** are left out, which removes
+unreleased and obscure entries and keeps the files small. To include more, set repository **variables**
+`MIN_VOTES_MOVIES` / `MIN_VOTES_SERIES` (Settings → Secrets and variables → Actions → Variables), e.g. `200` / `100`.
+
+### Posters
+IMDb has no images. Posters and descriptions are filled in gradually (series ~3000/day, movies ~6000/day,
+most popular first). Movies need the `TMDB_API_KEY` secret for this. Titles with no poster yet still show up
+in search and lists, so the app should use a placeholder image.
+
+IMDb data is licensed for personal, non-commercial use.
 
 Every item has the same shape: `id, type, title, overview, year, release_date, genres, rating (0-10), poster, backdrop, status, episodes, runtime ...`
 
@@ -39,8 +58,9 @@ Copy `app-integration/kinoDb.ts` into the app as `src/services/kinoDb.ts`, then:
 ```ts
 import { getList, search, getSchedule } from './services/kinoDb';
 
-const trending = await getList('anime', 'trending');
-const results  = await search('series', 'breaking');
+const trending = await getList('anime', 'trending');          // live lists
+const { live, movies, series } = await searchGlobal('breaking'); // whole world
+const top = await getBulkList('movies', 'top_rated', 50);        // global top rated
 ```
 
 ## Local test
