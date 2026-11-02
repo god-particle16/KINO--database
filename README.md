@@ -56,7 +56,7 @@ Every item has the same shape: `id, type, title, overview, year, release_date, g
 Copy `app-integration/kinoDb.ts` into the app as `src/services/kinoDb.ts`, then:
 
 ```ts
-import { getList, search, getSchedule } from './services/kinoDb';
+import { getList, searchGlobal, getBulkList, getSchedule } from './services/kinoDb';
 
 const trending = await getList('anime', 'trending');          // live lists
 const { live, movies, series } = await searchGlobal('breaking'); // whole world
